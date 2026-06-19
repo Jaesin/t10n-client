@@ -96,6 +96,22 @@ export class AudioCache {
   }
 
   /**
+   * Clears the Cache API bucket and resets the in-memory index. Never throws.
+   * Useful for debugging and "reset" flows.
+   */
+  async clear(): Promise<void> {
+    this.index.clear();
+    this.hydrated = false;
+    this.hydrating = null;
+    if (!cacheAvailable()) return;
+    try {
+      await caches.delete(CACHE_NAME);
+    } catch {
+      // best-effort
+    }
+  }
+
+  /**
    * Stores an audio payload. Updates the in-memory index on success. Returns
    * true if the store (and index update) happened. Never throws.
    */
