@@ -16,6 +16,8 @@ export type {
   LangCode,
   Register,
   Segment,
+  TonalSyllable,
+  Particle,
   TranslateRequest,
   TranslateResponse,
   TtsRequest,

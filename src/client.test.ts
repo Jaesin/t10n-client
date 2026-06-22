@@ -61,6 +61,40 @@ describe('T10nError', () => {
       { text: 'こんにちは' },
     );
   });
+
+  it('passes the Thai-side aids (syllables/particle/rtgs) through untouched', async () => {
+    const payload = {
+      from: 'en' as const,
+      to: 'th' as const,
+      source: 'hello',
+      text: 'สวัสดีครับ',
+      romanization: 'sà-wàt-dii khráp',
+      tones: ['low', 'low', 'mid', 'high'],
+      segments: [{ source: 'hello', target: 'สวัสดี', gloss: 'a greeting' }],
+      syllables: [
+        { text: 'สวัส', romanization: 'sà-wàt', tone: 'low', class: 'high' },
+        { text: 'ดี', romanization: 'dii', tone: 'mid', class: 'mid' },
+        { text: 'ครับ', romanization: 'khráp', tone: 'high', class: 'high' },
+      ],
+      particle: 'khrap' as const,
+      rtgs: 'sawatdi khrap',
+      model: 'gemini',
+      cached: false,
+    };
+    const client = makeClient(() =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.translate({ from: 'en', to: 'th', text: 'hello', register: 'polite' }),
+    ).resolves.toMatchObject({
+      particle: 'khrap',
+      rtgs: 'sawatdi khrap',
+      syllables: payload.syllables,
+    });
+  });
 });
 
 describe('getToken', () => {

@@ -22,6 +22,23 @@ export interface Segment {
   gloss?: string;
 }
 
+/**
+ * A single syllable of a tonal-script language (currently Thai), carrying the
+ * per-syllable pronunciation aids learners need. Returned in
+ * `TranslateResponse.syllables` when either side of the translation is Thai;
+ * the array describes the Thai text in the response (the target for en→th, the
+ * source for th→en).
+ */
+export interface TonalSyllable {
+  text: string; // the script glyph(s) for this syllable (e.g. Thai)
+  romanization: string; // tone-marked romanization for this syllable
+  tone: string; // 'mid' | 'low' | 'falling' | 'high' | 'rising'
+  class?: string; // initial-consonant class: 'mid' | 'high' | 'low'
+}
+
+/** Thai politeness particle present in the Thai text. */
+export type Particle = 'khrap' | 'kha' | 'neutral';
+
 export interface TranslateResponse {
   from: LangCode;
   to: LangCode;
@@ -31,6 +48,10 @@ export interface TranslateResponse {
   romanization?: string; // target ja + th
   tones?: string[]; // target th
   segments: Segment[];
+  // ---- Thai-side aids (present when from or to is 'th'); describe the Thai text ----
+  syllables?: TonalSyllable[]; // per-syllable breakdown of the Thai text
+  particle?: Particle; // polite ending particle in the Thai text
+  rtgs?: string; // plain RTGS spelling (no tone marks), display-only
   model: string;
   cached: boolean;
 }
