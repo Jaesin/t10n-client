@@ -63,6 +63,89 @@ describe('T10nError', () => {
   });
 });
 
+describe('getToken', () => {
+  it('sends the Authorization header when getToken returns a token', async () => {
+    let captured: Request | null = null;
+    const payload = {
+      from: 'en' as const,
+      to: 'ja' as const,
+      source: 'hi',
+      text: 'こんにちは',
+      segments: [],
+      model: 'gpt-4o',
+      cached: false,
+    };
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      getToken: async () => 'my-token',
+      fetch: ((input: RequestInfo, init?: RequestInit) => {
+        captured = new Request(input as string, init);
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }) as typeof fetch,
+    });
+    await client.translate({ from: 'en', to: 'ja', text: 'hi' });
+    expect(captured!.headers.get('Authorization')).toBe('Bearer my-token');
+  });
+
+  it('omits the Authorization header when getToken returns null', async () => {
+    let captured: Request | null = null;
+    const payload = {
+      from: 'en' as const,
+      to: 'ja' as const,
+      source: 'hi',
+      text: 'こんにちは',
+      segments: [],
+      model: 'gpt-4o',
+      cached: false,
+    };
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      getToken: async () => null,
+      fetch: ((input: RequestInfo, init?: RequestInit) => {
+        captured = new Request(input as string, init);
+        return Promise.resolve(
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }) as typeof fetch,
+    });
+    await client.translate({ from: 'en', to: 'ja', text: 'hi' });
+    expect(captured!.headers.get('Authorization')).toBeNull();
+  });
+});
+
+describe('fetchSpeech', () => {
+  it('POSTs to /tts and returns the parsed audio payload', async () => {
+    const payload = {
+      audio: { base64: 'AAAA', format: 'mp3' as const, duration_seconds: 1 },
+      cached: false,
+    };
+    const client = makeClient(() =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    await expect(
+      client.fetchSpeech({ text: 'hello', voice: 'en-US-JennyNeural' }),
+    ).resolves.toMatchObject({ audio: { base64: 'AAAA', format: 'mp3' } });
+  });
+});
+
+describe('baseUrl', () => {
+  it('strips trailing slashes from the provided URL', () => {
+    const client = createT10nClient({ baseUrl: 'https://test.local///' });
+    expect(client.baseUrl).toBe('https://test.local');
+  });
+});
+
 describe('fetch timeout', () => {
   it('aborts with a TimeoutError when timeoutMs is exceeded', async () => {
     const client = createT10nClient({

@@ -172,6 +172,8 @@ export interface UseSpeakerResult {
   cancel: () => void;
   speaking: boolean;
   engineFor: (text: string | null | undefined, opts?: SpeakOptions) => Engine;
+  /** Warm cloud clips so a later tap plays TTS (and engineFor flips to 'cloud'). */
+  prefetch: (items: Array<{ text: string; voice?: string; lang?: LangCode }>) => Promise<void>;
   capabilities: { cloud: boolean; device: boolean };
 }
 
@@ -191,12 +193,17 @@ export function useSpeaker(): UseSpeakerResult {
     (text: string | null | undefined, opts?: SpeakOptions) => speaker.engineFor(text, opts),
     [speaker],
   );
+  const prefetch = useCallback(
+    (items: Array<{ text: string; voice?: string; lang?: LangCode }>) => speaker.prefetch(items),
+    [speaker],
+  );
 
   return {
     speak,
     cancel,
     speaking: speaker.speaking,
     engineFor,
+    prefetch,
     capabilities: speaker.capabilities,
   };
 }

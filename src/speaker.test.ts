@@ -3,6 +3,19 @@ import { AudioCache } from './cache.js';
 import { createT10nClient } from './client.js';
 import type { TtsResponse } from './types.js';
 
+class MockAudio {
+  src = '';
+  private listeners: Record<string, Array<() => void>> = {};
+  play = vi.fn(() => Promise.resolve());
+  pause = vi.fn();
+  addEventListener(event: string, cb: () => void, _opts?: unknown) {
+    (this.listeners[event] ??= []).push(cb);
+  }
+  emit(event: string) {
+    for (const cb of this.listeners[event] ?? []) cb();
+  }
+}
+
 // --- Minimal in-memory Cache API mock ---------------------------------------
 
 class FakeResponse {
@@ -41,7 +54,10 @@ const g = globalThis as unknown as Record<string, unknown>;
 
 beforeEach(() => {
   fakeCache = new FakeCache();
-  g.caches = { open: vi.fn(async () => fakeCache) };
+  g.caches = {
+    open: vi.fn(async () => fakeCache),
+    delete: vi.fn(async () => { fakeCache.store.clear(); return true; }),
+  };
   // speechSynthesis is irrelevant to the index test; mark device available.
   g.window = {
     speechSynthesis: { speak: vi.fn(), cancel: vi.fn() },
@@ -199,5 +215,240 @@ describe('speaker.cancel()', () => {
     expect(speaker.speaking).toBe(false);
     settled = true;
     expect(settled).toBe(true); // ensure we reached here without hanging
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prefetch — additional cases
+// ---------------------------------------------------------------------------
+
+describe('prefetch - voice resolution', () => {
+  it('resolves the Azure voice name from lang when voice is not specified', async () => {
+    const { client, fetchSpeech } = makeClient({ base64: 'AAAA', format: 'mp3', duration_seconds: 1 });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+
+    await speaker.prefetch([{ text: TEXT, lang: 'ja' }]);
+
+    expect(fetchSpeech).toHaveBeenCalledOnce();
+    // ja resolves to ja-JP-NanamiNeural
+    expect(speaker.engineFor(TEXT, { voice: 'ja-JP-NanamiNeural' })).toBe('cloud');
+  });
+});
+
+describe('prefetch - warm skips', () => {
+  it('does not re-fetch an item that is already in the cache', async () => {
+    const { client, fetchSpeech } = makeClient({ base64: 'AAAA', format: 'mp3', duration_seconds: 1 });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+
+    await speaker.prefetch([{ text: TEXT, voice: VOICE }]);
+    const firstCount = fetchSpeech.mock.calls.length;
+
+    // Same item — warm should short-circuit on cache.has().
+    await speaker.prefetch([{ text: TEXT, voice: VOICE }]);
+    expect(fetchSpeech.mock.calls.length).toBe(firstCount);
+  });
+
+  it('does not fetch when navigator.onLine is false', async () => {
+    const { client, fetchSpeech } = makeClient({ base64: 'AAAA', format: 'mp3', duration_seconds: 1 });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+
+    vi.stubGlobal('navigator', { onLine: false });
+    try {
+      await speaker.prefetch([{ text: TEXT, voice: VOICE }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(fetchSpeech).not.toHaveBeenCalled();
+  });
+});
+
+describe('prefetch - Promise.allSettled', () => {
+  it('resolves even when some items fail to fetch', async () => {
+    let calls = 0;
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      fetch: (async () => {
+        calls++;
+        if (calls % 2 === 0) throw new Error('network error');
+        return new Response(
+          JSON.stringify({
+            audio: { base64: 'AAAA', format: 'mp3', duration_seconds: 1 },
+            cached: false,
+          } satisfies TtsResponse),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }) as unknown as typeof fetch,
+    });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+
+    await expect(
+      speaker.prefetch([
+        { text: 'item A', voice: VOICE },
+        { text: 'item B', voice: VOICE },
+        { text: 'item C', voice: VOICE },
+      ]),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// speak()
+// ---------------------------------------------------------------------------
+
+describe('speak() - cloud engine', () => {
+  it('plays a cached clip, sets speaking=true, fires onDone when the audio ends', async () => {
+    const { client } = makeClient({ base64: 'AAAA', format: 'mp3', duration_seconds: 1 });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+    await speaker.prefetch([{ text: TEXT, voice: VOICE }]);
+    expect(speaker.engineFor(TEXT, { voice: VOICE })).toBe('cloud');
+
+    // Replace the stub Audio with a controllable mock.
+    let captured: MockAudio | undefined;
+    g.Audio = function () {
+      captured = new MockAudio();
+      return captured;
+    };
+
+    const onDone = vi.fn();
+    speaker.speak(TEXT, { voice: VOICE, onDone });
+
+    // Flush the async cache.get() → playCloud chain.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(captured).toBeDefined();
+    expect(captured!.play).toHaveBeenCalled();
+    expect(speaker.speaking).toBe(true);
+
+    captured!.emit('ended');
+    expect(onDone).toHaveBeenCalledWith({ engine: 'cloud', cached: true });
+    expect(speaker.speaking).toBe(false);
+  });
+});
+
+describe('speak() - device engine', () => {
+  it('speaks via speechSynthesis and fires onDone when the utterance ends', () => {
+    const speaker = makeSpeakerOffline();
+
+    const onDone = vi.fn();
+    speaker.speak(TEXT, { voice: VOICE, lang: 'ja', onDone });
+
+    expect(speaker.speaking).toBe(true);
+
+    // Retrieve the utterance passed to speechSynthesis.speak and trigger its end.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [utterance] = (g.window as any).speechSynthesis.speak.mock.calls[0] as [
+      { onend: () => void },
+    ];
+    utterance.onend();
+
+    expect(onDone).toHaveBeenCalledWith({ engine: 'device', cached: false });
+    expect(speaker.speaking).toBe(false);
+  });
+
+  it('handle.cancel() stops device playback immediately', () => {
+    const speaker = makeSpeakerOffline();
+
+    const handle = speaker.speak(TEXT, { voice: VOICE });
+    expect(speaker.speaking).toBe(true);
+
+    handle.cancel();
+    expect(speaker.speaking).toBe(false);
+  });
+});
+
+describe('speak() - null engine', () => {
+  it('returns a handle without starting playback when engine is null', () => {
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      fetch: (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch,
+    });
+    const speaker = client.createSpeaker({ fallback: 'none' });
+
+    const handle = speaker.speak(TEXT, { voice: VOICE });
+    expect(speaker.speaking).toBe(false);
+    expect(() => handle.cancel()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSnapshot()
+// ---------------------------------------------------------------------------
+
+describe('getSnapshot()', () => {
+  it('version increments after a clip is stored', async () => {
+    const { client } = makeClient({ base64: 'AAAA', format: 'mp3', duration_seconds: 1 });
+    const speaker = client.createSpeaker({ fallback: 'web-speech' });
+    await speaker.ready();
+
+    const v0 = speaker.getSnapshot();
+    await speaker.prefetch([{ text: TEXT, voice: VOICE }]);
+    expect(speaker.getSnapshot()).toBeGreaterThan(v0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capabilities
+// ---------------------------------------------------------------------------
+
+describe('capabilities', () => {
+  it('reports cloud:true and device:true when both are available', () => {
+    const speaker = makeSpeakerOffline();
+    expect(speaker.capabilities.cloud).toBe(true);
+    expect(speaker.capabilities.device).toBe(true);
+  });
+
+  it('reports device:false when fallback is none', () => {
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      fetch: (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch,
+    });
+    const speaker = client.createSpeaker({ fallback: 'none' });
+    expect(speaker.capabilities.device).toBe(false);
+  });
+
+  it('reports cloud:false when the Audio constructor is unavailable', () => {
+    delete g.Audio;
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      fetch: (() => Promise.reject(new Error('offline'))) as unknown as typeof fetch,
+    });
+    const speaker = client.createSpeaker({ fallback: 'none' });
+    expect(speaker.capabilities.cloud).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AudioCache.clear()
+// ---------------------------------------------------------------------------
+
+describe('AudioCache.clear()', () => {
+  it('removes all stored entries and resets the in-memory index', async () => {
+    const cache = new AudioCache();
+    await cache.set(TEXT, VOICE, { base64: 'AAAA', format: 'mp3' });
+    expect(cache.has(TEXT, VOICE)).toBe(true);
+
+    await cache.clear();
+    expect(cache.has(TEXT, VOICE)).toBe(false);
+    expect(cache.ready).toBe(false);
+  });
+
+  it('re-init after clear does not restore the deleted entries', async () => {
+    const cache = new AudioCache();
+    await cache.set(TEXT, VOICE, { base64: 'AAAA', format: 'mp3' });
+    await cache.clear();
+    await cache.init();
+    expect(cache.has(TEXT, VOICE)).toBe(false);
+  });
+
+  it('no-ops gracefully when caches is unavailable', async () => {
+    delete g.caches;
+    const cache = new AudioCache();
+    await expect(cache.clear()).resolves.toBeUndefined();
   });
 });
