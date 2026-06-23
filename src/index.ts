@@ -15,6 +15,7 @@ export { AudioCache } from './cache.js';
 export type {
   LangCode,
   Register,
+  Provider,
   Segment,
   TonalSyllable,
   Particle,

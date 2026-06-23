@@ -6,6 +6,13 @@ export type LangCode = 'en' | 'ja' | 'th';
 
 export type Register = 'polite' | 'casual';
 
+/**
+ * Translation engine. `'gemini'` is the cloud primary; `'workersai'` is the open
+ * Gemma model on Cloudflare's own network. Pin one via `TranslateRequest.provider`;
+ * when unset the worker runs the default chain (Gemini, falling back to Workers AI).
+ */
+export type Provider = 'gemini' | 'workersai';
+
 // ---- translate ----
 
 export interface TranslateRequest {
@@ -13,6 +20,12 @@ export interface TranslateRequest {
   to: LangCode;
   text: string;
   register?: Register;
+  /**
+   * Pin a single engine instead of the default Gemini→Workers AI chain. Mainly
+   * to exercise the Workers AI path directly. A pinned request bypasses the
+   * worker's translation cache so it always hits the chosen engine.
+   */
+  provider?: Provider;
 }
 
 export interface Segment {

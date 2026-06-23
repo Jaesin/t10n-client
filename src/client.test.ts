@@ -97,6 +97,33 @@ describe('T10nError', () => {
   });
 });
 
+describe('provider', () => {
+  it('forwards the provider field in the request body', async () => {
+    let capturedBody: unknown;
+    const payload = {
+      from: 'en' as const,
+      to: 'th' as const,
+      source: 'hello',
+      text: 'สวัสดีครับ',
+      segments: [],
+      model: '@cf/google/gemma-4-26b-a4b-it',
+      cached: false,
+    };
+    const client = createT10nClient({
+      baseUrl: 'https://test.local',
+      fetch: (async (_input: RequestInfo, init?: RequestInit) => {
+        capturedBody = JSON.parse(init!.body as string);
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch,
+    });
+    await client.translate({ from: 'en', to: 'th', text: 'hello', provider: 'workersai' });
+    expect(capturedBody).toMatchObject({ provider: 'workersai' });
+  });
+});
+
 describe('getToken', () => {
   it('sends the Authorization header when getToken returns a token', async () => {
     let captured: Request | null = null;
